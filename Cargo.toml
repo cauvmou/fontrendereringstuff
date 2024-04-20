@@ -1,0 +1,18 @@
+[package]
+name = "textrenderingstuff"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+harfbuzz = "0.6.0"
+ttf-parser = "0.20.0"
+simple_logger = "4.3.3"
+wgpu = { version = "0.19.4", features = ["spirv"] }
+shaderc = "0.8.3"
+pollster = "0.3.0"
+image = "0.25.1"
+bytemuck = { version = "1.12", features = [ "derive" ] }
+log = "0.4.21"
+earcutr = "0.4.3"
