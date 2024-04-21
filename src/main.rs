@@ -1,9 +1,16 @@
+mod mesh;
+mod renderer;
+mod text;
+
 use simple_logger::SimpleLogger;
 use wgpu::util::{DeviceExt};
 use std::borrow::BorrowMut;
 use log::{debug, LevelFilter, trace};
+use crate::mesh::GlyphMeshBuilder;
+use crate::renderer::GlyphVertex;
+use crate::text::{TextMesh, TextMeshBuilder};
 
-const TEXTURE_SIZE: (u32, u32) = (1920u32, 1080u32);
+pub const TEXTURE_SIZE: (u32, u32) = (1920u32, 1080u32);
 const TEXT_POSITION: (u32, u32) = (100, 950);
 const DEBUG_SCALAR: f32 = 0.00015;
 const FONT_PATH: &'static str = "./fonts/NotoSansJP-Regular.ttf";
@@ -11,163 +18,8 @@ const FONT_PATH: &'static str = "./fonts/NotoSansJP-Regular.ttf";
 // const FONT_PATH: &'static str = "/usr/share/fonts/gnu-free/FreeSans.otf";
 const TEXT_STRING: &'static str = "Hello, World!";
 
-pub struct MyOutlineBuilder {
-    pub reverse_wind: bool,
-    pub start_index: u16,
-    pub polygons: Vec<Vec<(f32, f32)>>,
-    pub bezier_polygons: Vec<([(f32, f32); 3], bool)>,
-}
-
-impl MyOutlineBuilder {
-    pub fn new(reverse_wind: bool, start_index: u16) -> Self {
-        trace!("created outline builder");
-        Self {
-            reverse_wind,
-            start_index,
-            polygons: vec![],
-            bezier_polygons: vec![],
-        }
-    }
-
-    pub fn triangulate(&self) -> (Vec<GlyphVertex>, Vec<u16>) {
-        // check for holes
-        let is_polygon_hole = self.polygons.iter().map(|points| {
-            // Sum over edges
-            let mut sum = 0.0;
-            for index in 0..points.len() {
-                let current = points[index];
-                let next = points[(index + 1) % points.len()];
-                sum += current.0 * next.1 - next.0 * current.1;
-            }
-            (sum >= 0.0) ^ self.reverse_wind
-        }).collect::<Vec<bool>>();
-        trace!("holes: {is_polygon_hole:?}");
-
-        // Group Polygons
-        let mut polygon_with_holes: Vec<Vec<Vec<Vec<f32>>>> = vec![];
-        for (index, points) in self.polygons.iter().enumerate() {
-            if is_polygon_hole[index] {
-                let element = polygon_with_holes.last_mut().unwrap();
-                element.push(points.iter().map(|v| vec![v.0, v.1]).collect());
-            } else {
-                polygon_with_holes.push(vec![points.iter().map(|v| vec![v.0, v.1]).collect::<Vec<Vec<f32>>>()]);
-            }
-        }
-        trace!("grouped {:?} meshes", polygon_with_holes.len());
-
-        // triangulate
-        let mut indices: Vec<u16> = vec![];
-        let mut vertices: Vec<GlyphVertex> = vec![];
-        for points in polygon_with_holes {
-            // flatten
-            let (points, holes, dimensions) = earcutr::flatten(&points);
-
-            // Calculate indices
-            indices.append(&mut earcutr::earcut(
-                &points, &holes, dimensions,
-            ).unwrap()
-                .iter().map(|t| (vertices.len() + *t) as u16 + self.start_index).collect());
-
-            // Map point format
-            let (even, odd): (Vec<(usize, &f32)>, Vec<(usize, &f32)>) = points.iter().enumerate().partition(|(index, _v)| index % 2 == 0);
-            let points = even.iter().map(|v| *v.1).zip(odd.iter().map(|v| *v.1)).collect::<Vec<(f32, f32)>>();
-
-            // Map to vertices
-            vertices.append(&mut points.iter().map(|(x, y)| GlyphVertex {
-                position: [*x, *y, 0.0], // Only temp
-                uv: [0.0, 0.0],
-                metadata: 0,
-                color: [0.18, 0.76, 0.93],
-            }).collect());
-        }
-        for (polygon, is_inverse) in &self.bezier_polygons {
-            let index = vertices.len() as u16;
-            indices.append(&mut vec![index + self.start_index, index + 1 + self.start_index, index + 2 + self.start_index]);
-            vertices.append(&mut polygon.iter().enumerate().map(|(index, (x, y))| GlyphVertex {
-                position: [*x, *y, 0.0], // Only temp
-                uv: [[0.0, 0.0], [0.5, 0.0], [1.0, 1.0]][index],
-                metadata: 0b10 | *is_inverse as i32,
-                color: [0.18, 0.76, 0.93],
-            }).collect());
-        }
-        trace!("finished triangulating");
-        (vertices, indices)
-    }
-}
-
-impl ttf_parser::OutlineBuilder for MyOutlineBuilder {
-    fn move_to(&mut self, x: f32, y: f32) {
-        trace!("MOVE TO {x} {y}");
-        self.polygons.push(Vec::new());
-        self.polygons.last_mut().unwrap().push((x, y))
-    }
-
-    fn line_to(&mut self, x: f32, y: f32) {
-        trace!("LINE TO {x} {y}");
-        self.polygons.last_mut().unwrap().push((x, y))
-    }
-
-    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        trace!("QUADRATIC TO {x} {y} OVER {x1} {y1}");
-        let points = [*self.polygons.last().unwrap().last().unwrap(), (x1, y1), (x, y)];
-        let is_inverse = {
-            let mut sum = 0.0;
-            for index in 0..points.len() {
-                let current = points[index];
-                let next = points[(index + 1) % points.len()];
-                sum += current.0 * next.1 - next.0 * current.1;
-            }
-            sum >= 0.0
-        } ^ self.reverse_wind;
-        self.bezier_polygons.push((points, is_inverse));
-        if is_inverse {
-            self.polygons.last_mut().unwrap().push((x1, y1));
-        }
-        self.polygons.last_mut().unwrap().push((x, y));
-    }
-
-    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        let (ix, iy) = (x1 + (x2 - x1) / 2.0, y1 + (y2 - y1) / 2.0);
-        trace!("CURVE TO {x} {y} OVER {ix} {iy}");
-        let points = [*self.polygons.last().unwrap().last().unwrap(), (x1, y1), (ix, iy)];
-        let is_inverse = {
-            let mut sum = 0.0;
-            for index in 0..points.len() {
-                let current = points[index];
-                let next = points[(index + 1) % points.len()];
-                sum += current.0 * next.1 - next.0 * current.1;
-            }
-            sum >= 0.0
-        } ^ self.reverse_wind;
-        self.bezier_polygons.push((points, is_inverse));
-        if is_inverse {
-            self.polygons.last_mut().unwrap().push((x1, y1));
-        }
-        self.polygons.last_mut().unwrap().push((ix, iy)); // Implied point by cubic bezier
-        let points = [(ix, iy), (x2, y2), (x, y)];
-        let is_inverse = {
-            let mut sum = 0.0;
-            for index in 0..points.len() {
-                let current = points[index];
-                let next = points[(index + 1) % points.len()];
-                sum += current.0 * next.1 - next.0 * current.1;
-            }
-            sum >= 0.0
-        } ^ self.reverse_wind;
-        self.bezier_polygons.push((points, is_inverse));
-        if is_inverse {
-            self.polygons.last_mut().unwrap().push((x2, y2));
-        }
-        self.polygons.last_mut().unwrap().push((x, y));
-    }
-
-    fn close(&mut self) {
-        trace!("CLOSE");
-    }
-}
-
 #[derive(Copy, Clone, Debug)]
-pub struct MyGlyph {
+pub struct GlyphData {
     glyph_id: u32,
     x_advance: i32,
     y_advance: i32,
@@ -175,54 +27,8 @@ pub struct MyGlyph {
     y_offset: i32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GlyphVertex {
-    position: [f32; 3],
-    uv: [f32; 2],
-    metadata: i32,
-    color: [f32; 3],
-}
-
-impl GlyphVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Sint32, 3 => Float32x3];
-
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    position: [f32; 3],
-    uv: [f32; 2],
-}
-
-impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2];
-
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
 fn main() {
-    SimpleLogger::new().with_level(LevelFilter::Info).init().unwrap();
+    SimpleLogger::new().with_level(LevelFilter::Debug).init().unwrap();
 
     // Load font
     let raw_font_data = std::fs::read(FONT_PATH).unwrap();
@@ -230,7 +36,7 @@ fn main() {
     debug!("Tables: {:?}, {:?}, {:?}", face.tables().glyf, face.tables().cff, face.tables().cff2);
 
     // Shape and get glyph information
-    let mut glyph_data: Vec<MyGlyph> = Vec::new();
+    let mut glyph_data: Vec<GlyphData> = Vec::new();
     {
         let mut hb_buffer = harfbuzz::Buffer::with(TEXT_STRING);
         hb_buffer.guess_segment_properties();
@@ -246,7 +52,7 @@ fn main() {
             unsafe {
                 let hb_glyph_info = hb_glyph_infos.add(index);
                 let hb_glyph_position = hb_glyph_positions.add(index);
-                glyph_data.push(MyGlyph {
+                glyph_data.push(GlyphData {
                     glyph_id: (*hb_glyph_info).codepoint as u32,
                     x_advance: (*hb_glyph_position).x_advance as i32,
                     y_advance: (*hb_glyph_position).y_advance as i32,
@@ -258,28 +64,13 @@ fn main() {
     }
     debug!("{glyph_data:?}");
 
-    // Check winding order to use
-    let reverse_wind = (face.tables().cff.is_some() | face.tables().cff2.is_some()) ^ !face.tables().glyf.is_some();
-
     // Triangulate and create Vertices and Indices + offset them according to GlyphData
-    let mut vertices: Vec<GlyphVertex> = vec![];
-    let mut indices: Vec<u16> = vec![];
-    let mut cursor_x = 0;
+    let mut text_mesh_builder = TextMeshBuilder::new();
     for data in glyph_data {
-        let mut builder = MyOutlineBuilder::new(reverse_wind, vertices.len() as u16);
-        face.outline_glyph(ttf_parser::GlyphId(data.glyph_id as u16), &mut builder);
-        let (mut v, mut i) = builder.triangulate();
-        for gv in &mut v {
-            gv.position[0] += cursor_x as f32;
-            gv.position[0] *= DEBUG_SCALAR;
-            gv.position[1] *= DEBUG_SCALAR * (TEXTURE_SIZE.0 as f32 / TEXTURE_SIZE.1 as f32);
-            gv.position[0] += -1.0 + TEXT_POSITION.0 as f32 / TEXTURE_SIZE.0 as f32;
-            gv.position[1] += -1.0 + TEXT_POSITION.1 as f32 / TEXTURE_SIZE.1 as f32;
-        }
-        cursor_x += data.x_advance;
-        vertices.append(&mut v);
-        indices.append(&mut i);
+        let mesh = GlyphMeshBuilder::new().build(&face, ttf_parser::GlyphId(data.glyph_id as u16));
+        text_mesh_builder.add(mesh, data);
     }
+    let TextMesh { vertices, indices } = text_mesh_builder.build(&face);
     debug!("{vertices:?}");
     debug!("{indices:?}");
 
@@ -339,7 +130,7 @@ fn main() {
     // Compile and create shader modules
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(include_str!("./shader.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shader/glyph.wgsl").into()),
     });
 
     // Create vertex buffer
