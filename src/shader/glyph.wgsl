@@ -27,17 +27,22 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var is_inverse: bool = (in.metadata & 1) > 0;
     var is_curve: bool = (in.metadata & 2) > 0;
+
+    return vec4(in.color, sample_curve(is_inverse, is_curve, in.uv.xy));
+}
+
+fn sample_curve(is_inverse: bool, is_curve: bool, uv: vec2<f32>) -> f32 {
     var fill: f32 = 0.0;
     if !is_curve {
         fill = 1.0;
     } else if is_inverse {
-        if in.uv.y < in.uv.x*in.uv.x {
+        if uv.y < uv.x*uv.x {
             fill = 1.0;
         }
     } else {
-        if in.uv.y >= in.uv.x*in.uv.x {
+        if uv.y >= uv.x*uv.x {
                     fill = 1.0;
                 }
     }
-    return vec4(in.color, fill);
+    return fill;
 }

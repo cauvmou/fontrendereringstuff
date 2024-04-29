@@ -6,17 +6,14 @@ use simple_logger::SimpleLogger;
 use wgpu::util::{DeviceExt};
 use std::borrow::BorrowMut;
 use log::{debug, LevelFilter, trace};
-use crate::mesh::GlyphMeshBuilder;
+use crate::mesh::{TextMesh};
 use crate::renderer::GlyphVertex;
-use crate::text::{TextMesh, TextMeshBuilder};
+use crate::text::{Alignment, Span};
 
 pub const TEXTURE_SIZE: (u32, u32) = (1920u32, 1080u32);
-const TEXT_POSITION: (u32, u32) = (100, 950);
-const DEBUG_SCALAR: f32 = 0.00015;
-const FONT_PATH: &'static str = "./fonts/NotoSansJP-Regular.ttf";
-// const FONT_PATH: &'static str = "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf";
-// const FONT_PATH: &'static str = "/usr/share/fonts/gnu-free/FreeSans.otf";
-const TEXT_STRING: &'static str = "Hello, World!";
+// const FONT_PATH: &'static str = "./fonts/NotoSansJP-Regular.ttf";
+// const FONT_PATH: &'static str = "/usr/share/fonts/liberation/LiberationMono-Regular.ttf";
+const FONT_PATH: &'static str = "/usr/share/fonts/gnu-free/FreeSans.otf";
 
 #[derive(Copy, Clone, Debug)]
 pub struct GlyphData {
@@ -28,51 +25,22 @@ pub struct GlyphData {
 }
 
 fn main() {
-    SimpleLogger::new().with_level(LevelFilter::Debug).init().unwrap();
+    SimpleLogger::new()/*.with_level(LevelFilter::Debug)*/.init().unwrap();
 
     // Load font
     let raw_font_data = std::fs::read(FONT_PATH).unwrap();
     let face = ttf_parser::Face::parse(&raw_font_data, 0).unwrap();
-    debug!("Tables: {:?}, {:?}, {:?}", face.tables().glyf, face.tables().cff, face.tables().cff2);
 
-    // Shape and get glyph information
-    let mut glyph_data: Vec<GlyphData> = Vec::new();
-    {
-        let mut hb_buffer = harfbuzz::Buffer::with(TEXT_STRING);
-        hb_buffer.guess_segment_properties();
-        let hb_buffer = hb_buffer.into_raw();
-        let hb_blob = harfbuzz::Blob::new_read_only(&raw_font_data);
-        let hb_face = unsafe { harfbuzz::sys::hb_face_create(hb_blob.as_raw(), 0) };
-        let hb_font = unsafe { harfbuzz::sys::hb_font_create(hb_face) };
-        unsafe { harfbuzz::sys::hb_shape(hb_font, hb_buffer, std::ptr::null(), 0) };
-        let mut hb_glyph_count: u32 = 0;
-        let hb_glyph_infos = unsafe { harfbuzz::sys::hb_buffer_get_glyph_infos(hb_buffer, hb_glyph_count.borrow_mut() as *mut u32) };
-        let hb_glyph_positions = unsafe { harfbuzz::sys::hb_buffer_get_glyph_positions(hb_buffer, hb_glyph_count.borrow_mut() as *mut u32) };
-        for index in 0..(hb_glyph_count as usize) {
-            unsafe {
-                let hb_glyph_info = hb_glyph_infos.add(index);
-                let hb_glyph_position = hb_glyph_positions.add(index);
-                glyph_data.push(GlyphData {
-                    glyph_id: (*hb_glyph_info).codepoint as u32,
-                    x_advance: (*hb_glyph_position).x_advance as i32,
-                    y_advance: (*hb_glyph_position).y_advance as i32,
-                    x_offset: (*hb_glyph_position).x_offset as i32,
-                    y_offset: (*hb_glyph_position).y_offset as i32,
-                })
-            }
-        }
-    }
-    debug!("{glyph_data:?}");
-
-    // Triangulate and create Vertices and Indices + offset them according to GlyphData
-    let mut text_mesh_builder = TextMeshBuilder::new();
-    for data in glyph_data {
-        let mesh = GlyphMeshBuilder::new().build(&face, ttf_parser::GlyphId(data.glyph_id as u16));
-        text_mesh_builder.add(mesh, data);
-    }
-    let TextMesh { vertices, indices } = text_mesh_builder.build(&face);
-    debug!("{vertices:?}");
-    debug!("{indices:?}");
+    let TextMesh { vertices, indices } = Span::new(
+        &face,
+        "Hello, World!",
+        0,
+        0)
+        .with_font_size(24)
+        .with_size(TEXTURE_SIZE.0 as usize, TEXTURE_SIZE.1 as usize)
+        .with_h_align(Alignment::Middle)
+        .with_v_align(Alignment::Middle)
+        .generate_text_mesh();
 
     // Setup wgpu
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -181,7 +149,7 @@ fn main() {
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None, // Some(wgpu::Face::Back),
+            cull_mode: None, //Some(wgpu::Face::Back),
             unclipped_depth: false,
             polygon_mode: wgpu::PolygonMode::Fill,
             conservative: false,
@@ -195,6 +163,18 @@ fn main() {
         multiview: None,
     });
 
+    // SMAA
+    let mut smaa_target = smaa::SmaaTarget::new(
+        &device,
+        &queue,
+        TEXTURE_SIZE.0,
+        TEXTURE_SIZE.1,
+        texture.format(),
+        smaa::SmaaMode::Smaa1X
+    );
+
+    let smaa_frame = smaa_target.start_frame(&device, &queue, &texture_view);
+
     // Render encoder and pass
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: None,
@@ -205,13 +185,13 @@ fn main() {
             label: Some("Render Pass"),
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
+                    view: &smaa_frame,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.12,
-                            g: 0.16,
-                            b: 0.20,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -230,7 +210,14 @@ fn main() {
         render_pass.draw_indexed(0..(indices.len() as u32), 0, 0..1);
     }
 
+    queue.submit(Some(encoder.finish()));
+    smaa_frame.resolve();
+
     // Copy texture to output buffer
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: None,
+    });
+
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
             aspect: wgpu::TextureAspect::All,
