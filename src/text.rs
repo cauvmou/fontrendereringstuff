@@ -10,15 +10,40 @@ pub enum Alignment {
     End,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum FontSize {
+    Px(usize),
+    Pt(usize)
+}
+
+impl Into<f32> for FontSize {
+    fn into(self) -> f32 {
+        match self {
+            FontSize::Px(x) => {x as f32}
+            FontSize::Pt(x) => {(x as f32 / 72.0) * 150.0 }
+        }
+    }
+}
+
+impl Into<i32> for FontSize {
+    fn into(self) -> i32 {
+        match self {
+            FontSize::Px(x) => {x as i32}
+            FontSize::Pt(x) => {((x as f32 / 72.0) * 150.0).round() as i32 }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Span<'s> {
     text: &'s str,
     font_face: &'s ttf_parser::Face<'s>,
     position: (i32, i32),
-    font_size: usize,
+    font_size: FontSize,
     size: Option<(usize, usize)>,
     v_align: Alignment,
     h_align: Alignment,
+    color: [f32; 4]
 }
 
 impl<'s> Span<'s> {
@@ -27,34 +52,44 @@ impl<'s> Span<'s> {
             text,
             font_face,
             position: (x, y),
-            font_size: 12,
+            font_size: FontSize::Pt(12),
             size: None,
             v_align: Alignment::Start,
             h_align: Alignment::Start,
+            color: [0.0, 0.0, 0.0, 1.0],
         }
     }
 
-    pub fn with_size(&mut self, width: usize, height: usize) -> &mut Self {
+    pub fn with_size(mut self, width: usize, height: usize) -> Self {
         self.size = Some((width, height));
         self
     }
     
-    pub fn with_font_size(&mut self, font_size: usize) -> &mut Self {
+    pub fn with_font_size(mut self, font_size: FontSize) -> Self {
         self.font_size = font_size;
         self
     }
 
-    pub fn with_v_align(&mut self, v_align: Alignment) -> &mut Self {
+    pub fn with_v_align(mut self, v_align: Alignment) -> Self {
         self.v_align = v_align;
         self
     }
 
-    pub fn with_h_align(&mut self, h_align: Alignment) -> &mut Self {
+    pub fn with_h_align(mut self, h_align: Alignment) -> Self {
         self.h_align = h_align;
         self
     }
+    
+    pub fn with_color(mut self, color: [f32; 4]) -> Self {
+        self.color = color;
+        self
+    }
+    
+    pub fn get_color(&self) -> [f32; 4] {
+        self.color
+    }
 
-    pub fn generate_text_mesh(&self) -> TextMesh {
+    pub fn generate_text_mesh(&self, color_index: u32) -> TextMesh {
         let glyph_data = self.shape_glyph_data();
         let mut text_mesh_builder = TextMeshBuilder::new();
         let mut width = 0.0;
@@ -64,7 +99,7 @@ impl<'s> Span<'s> {
             text_mesh_builder.add(mesh, data);
         }
         // Align text
-        width = width / self.font_face.height() as f32 * self.font_size as f32* 1.254; // Convert width to pixels
+        width = width / self.font_face.height() as f32 * <FontSize as Into<f32>>::into(self.font_size) * 1.254; // Convert width to pixels
         let mut text_position: (i32, i32) = self.position;
         if let Some(size) = self.size {
             match self.h_align {
@@ -82,17 +117,17 @@ impl<'s> Span<'s> {
                 Alignment::Start => {}
                 Alignment::Middle => {
                     text_position.1 += size.1 as i32 / 2;
-                    text_position.1 -= self.font_size as i32 / 2;
+                    text_position.1 -= <FontSize as Into<i32>>::into(self.font_size) / 2;
                 }
                 Alignment::End => {
                     text_position.1 += size.1 as i32;
-                    text_position.1 -= self.font_size as i32;
+                    text_position.1 -= <FontSize as Into<i32>>::into(self.font_size);
                 }
             }
         }
         text_mesh_builder.with_position(text_position.0, text_position.1);
         text_mesh_builder.with_font_size(self.font_size);
-        text_mesh_builder.build(self.font_face)
+        text_mesh_builder.build(self.font_face, color_index)
     }
 
     fn shape_glyph_data(&self) -> Vec<GlyphData> {

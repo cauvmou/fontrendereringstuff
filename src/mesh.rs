@@ -1,6 +1,8 @@
+use std::ops::Range;
 use log::{info, trace};
 use crate::{GlyphData, TEXTURE_SIZE};
 use crate::renderer::GlyphVertex;
+use crate::text::FontSize;
 
 #[derive(Clone, Debug)]
 pub struct GlyphMesh {
@@ -85,18 +87,18 @@ impl GlyphMeshBuilder {
                 position: [*x, *y, 0.0], // Only temp
                 uv: [0.0, 0.0],
                 metadata: 0,
-                color: [1.0, 1.0, 1.0],
+                color_index: 0,
             }).collect());
         }
         for (polygon, is_inverse) in &self.bezier_polygons {
             let index = vertices.len() as u16;
-            let mut i = vec![index, index + 1, index + 2];
+            let mut i = if *is_inverse ^ self.reverse_wind { vec![index, index + 1, index + 2] } else { vec![index + 2, index + 1, index] };
             indices.append(&mut i);
             vertices.append(&mut polygon.iter().enumerate().map(|(index, (x, y))| GlyphVertex {
                 position: [*x, *y, 0.0], // Only temp
                 uv: [[0.0, 0.0], [0.5, 0.0], [1.0, 1.0]][index],
                 metadata: 0b10 | *is_inverse as i32,
-                color: [1.0, 1.0, 1.0],
+                color_index: 0,
             }).collect());
         }
         trace!("finished triangulating");
@@ -164,7 +166,7 @@ pub struct TextMesh {
 
 pub struct TextMeshBuilder {
     mesh_data: Vec<(Option<GlyphMesh>, GlyphData)>,
-    font_size: usize,
+    font_size: FontSize,
     position: (i32, i32)
 }
 
@@ -172,12 +174,12 @@ impl TextMeshBuilder {
     pub fn new() -> Self {
         Self {
             mesh_data: vec![],
-            font_size: 500,
-            position: (100, 100),
+            font_size: FontSize::Pt(12),
+            position: (0, 0),
         }
     }
     
-    pub fn with_font_size(&mut self, font_size: usize) -> &mut Self {
+    pub fn with_font_size(&mut self, font_size: FontSize) -> &mut Self {
         self.font_size = font_size;
         self
     }
@@ -193,7 +195,7 @@ impl TextMeshBuilder {
         self
     }
 
-    pub fn build(mut self, face: &ttf_parser::Face) -> TextMesh {
+    pub fn build(mut self, face: &ttf_parser::Face, color_index: u32) -> TextMesh {
         let size_factor = 1.0 / face.height() as f32;
         let mut vertices: Vec<GlyphVertex> = vec![];
         let mut indices: Vec<u16> = vec![];
@@ -202,11 +204,13 @@ impl TextMeshBuilder {
             if let Some(mesh) = mesh {
                 indices.append(&mut mesh.indices.iter().map(|i| *i + (vertices.len() as u16)).collect());
                 vertices.append(&mut mesh.vertices.iter_mut().map(|v| {
+                    v.color_index = color_index;
                     v.position[0] += cursor.0;
                     v.position[1] += cursor.1;
-
-                    v.position[0] = v.position[0] * size_factor * self.font_size as f32 * 1.254;
-                    v.position[1] = v.position[1] * size_factor * self.font_size as f32 * 1.254;
+                    v.position[0] = v.position[0] * size_factor * 1.254 * <FontSize as Into<f32>>::into(self.font_size);
+                    v.position[1] = v.position[1] * size_factor * 1.254 * <FontSize as Into<f32>>::into(self.font_size);
+                    v.position[0] = (10.0 * v.position[0]).round() / 10.0;
+                    v.position[1] = (10.0 * v.position[1]).round() / 10.0;
                     v.position[0] = v.position[0] / TEXTURE_SIZE.0 as f32 * 2.0 - 1.0;
                     v.position[1] = v.position[1] / TEXTURE_SIZE.1 as f32 * 2.0 - 1.0;
                     v.position[0] += (self.position.0 as f32 / TEXTURE_SIZE.0 as f32) * 2.0;
