@@ -56,27 +56,6 @@ impl AAMode {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SubpixelOffsetInstanceRaw {
-    offset: f32,
-}
-
-impl SubpixelOffsetInstanceRaw {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 1] =
-        wgpu::vertex_attr_array![4 => Float32];
-
-    fn desc() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<SubpixelOffsetInstanceRaw>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
 /// Holds state for the render
 pub struct TextureRenderer<'r> {
     instance: wgpu::Instance,
@@ -105,6 +84,7 @@ impl<'r> TextureRenderer<'r> {
                 .position(|adapter| adapter.features().contains(wgpu::Features::POLYGON_MODE_LINE)).unwrap();
             all_adapters.remove(adapter_index)
         };
+        info!("{:?}", adapter.get_downlevel_capabilities());
         let (device, queue) = pollster::block_on(adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -194,7 +174,6 @@ impl<'r> TextureRenderer<'r> {
                 entry_point: "vs_main",
                 buffers: &[
                     GlyphVertex::desc(),
-                    SubpixelOffsetInstanceRaw::desc(),
                 ],
             },
             fragment: Some(wgpu::FragmentState {
@@ -321,22 +300,6 @@ impl<'r> TextureRenderer<'r> {
         let msaa_texture = self.device.create_texture(&msaa_texture_desc);
         let msaa_texture_view = msaa_texture.create_view(&Default::default());
 
-        // Create subpixel offset instances
-        let third_pixel: f32 = (1.0 / self.render_texture.width() as f32);
-        info!("pixel/3: {third_pixel}");
-        let subpixel_instance_data = vec![
-            SubpixelOffsetInstanceRaw { offset: -third_pixel },
-            SubpixelOffsetInstanceRaw { offset: third_pixel },
-            SubpixelOffsetInstanceRaw { offset: 0.0 },
-        ];
-        let subpixel_instance_buffer = self.device.create_buffer_init(
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("Subpixel Instance Buffer"),
-                contents: bytemuck::cast_slice(&subpixel_instance_data),
-                usage: wgpu::BufferUsages::VERTEX,
-            }
-        );
-
         // Render encoder and pass
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: None,
@@ -369,9 +332,8 @@ impl<'r> TextureRenderer<'r> {
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &color_buffer_group, &[]);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, subpixel_instance_buffer.slice(..));
             render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..(all_indices.len() as u32), 0, 0..subpixel_instance_data.len() as _);
+            render_pass.draw_indexed(0..(all_indices.len() as u32), 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));

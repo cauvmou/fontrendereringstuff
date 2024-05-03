@@ -39,7 +39,7 @@ fn main() {
         "SimpleLogger::new()/*.with_level(LevelFilter::Debug)*/.init().unwrap();",
         0,
         0)
-        .with_font_size(FontSize::Pt(12))
+        .with_font_size(FontSize::Pt(8))
         .with_size(TEXTURE_SIZE.0 as usize, TEXTURE_SIZE.1 as usize / 3)
         .with_h_align(Alignment::Middle)
         .with_v_align(Alignment::Middle)
@@ -68,7 +68,7 @@ fn main() {
             .with_color([0.0, 0.0, 1.0, 1.0])
         );
 
-    let img_noaa = renderer.render();
-    let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(TEXTURE_SIZE.0, TEXTURE_SIZE.1, img_noaa.clone()).unwrap();
-    buffer.save("./msaa.png").unwrap();
+    let image = renderer.render();
+    let buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(TEXTURE_SIZE.0, TEXTURE_SIZE.1, image).unwrap();
+    buffer.save("./image.png").unwrap();
 }
